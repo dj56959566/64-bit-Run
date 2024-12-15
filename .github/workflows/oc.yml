@@ -15,7 +15,7 @@ on:
 
 jobs:
   build:
-    if: ${{ github.repository == 'wukongdaily/RunFilesBuilder' || github.event_name == 'workflow_dispatch' }}
+    #if: ${{ github.repository == 'wukongdaily/RunFilesBuilder' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-22.04
 
     steps:

@@ -10,7 +10,7 @@ name: Make Passwall run files
 
 on:
   schedule:
-    - cron: 0 0 6 15 * ? * # 每月15号6点运行
+    - cron: '0 0 6 15 * ? *' # 每月15号6点运行
   workflow_dispatch:
 
 jobs:

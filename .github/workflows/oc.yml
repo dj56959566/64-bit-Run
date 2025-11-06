@@ -1,129 +1,91 @@
-name: Build OpenClash Installer
+name: Build OneCloud ImmortalWrt with OpenClash
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '0 16 * * *'   # 每天北京时间 00:00 检查更新
+    - cron: '0 16 * * *'   # 每日北京时间 00:00 自动检测更新
+  workflow_dispatch:
 
 jobs:
-  check-update:
-    runs-on: ubuntu-latest
-    outputs:
-      new_version: ${{ steps.check.outputs.new_version }}
-      should_build: ${{ steps.check.outputs.should_build }}
-
-    steps:
-      - name: Check latest OpenClash version
-        id: check
-        run: |
-          echo "🔍 检查 OpenClash 最新版本号..."
-          latest=$(curl -s https://api.github.com/repos/vernesong/OpenClash/contents/version | jq -r '.download_url' | xargs curl -s | head -n1)
-          echo "latest=$latest"
-          echo "latest=$latest" >> $GITHUB_ENV
-          
-          # 获取上次构建记录的版本号
-          old=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/openclash-latest | jq -r '.name' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "none")
-
-          echo "old=$old"
-
-          if [ "$latest" != "$old" ] && [ "$latest" != "null" ]; then
-            echo "🟢 检测到新版本: $latest"
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "new_version=$latest" >> $GITHUB_OUTPUT
-          else
-            echo "🟡 无新版本，无需构建"
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          fi
-
   build:
-    needs: check-update
-    if: needs.check-update.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout main repository
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Clone OpenClash luci feed
+      - name: Set Up Environment
         run: |
-          git clone -b package --depth=1 https://github.com/vernesong/OpenClash.git OpenClash
+          sudo apt-get update
+          sudo apt-get install -y wget curl git tar zip jq
 
-      - name: Clone Meta core
+      - name: Check Latest OpenClash Version
+        id: clash_ver
         run: |
-          git clone -b master --depth=1 https://github.com/vernesong/OpenClash.git Meta
+          latest=$(curl -s https://api.github.com/repos/vernesong/OpenClash/releases/latest | jq -r .tag_name)
+          echo "latest=$latest" >> $GITHUB_ENV
+          echo "Latest OpenClash Version: $latest"
 
-      - name: Prepare build directories
+          if [ -f last_version.txt ]; then
+            last=$(cat last_version.txt)
+          else
+            last="none"
+          fi
+          echo "Last Build Version: $last"
+
+          if [ "$latest" = "$last" ]; then
+            echo "No new version detected, skipping build."
+            echo "skip_build=true" >> $GITHUB_ENV
+          else
+            echo "$latest" > last_version.txt
+            echo "skip_build=false" >> $GITHUB_ENV
+          fi
+
+      - name: Stop if No New Version
+        if: env.skip_build == 'true'
+        run: exit 0
+
+      - name: Download OpenClash Core
         run: |
+          git clone --depth=1 -b core https://github.com/vernesong/OpenClash.git Meta
           mkdir -p openclash-x86 openclash-a53 openclash-a32
-          echo "version=${{ needs.check-update.outputs.new_version }}" >> $GITHUB_ENV
 
-      - name: Copy luci-app-openclash
+          find_extract() {
+            local name=$1
+            local target=$2
+            core_path=$(find Meta -type f -name "$name" | head -n1)
+            if [ -n "$core_path" ]; then
+              echo "Extracting $core_path ..."
+              tar -xzvf "$core_path" -C "$target"
+            else
+              echo "❌ Could not find $name"
+              exit 1
+            fi
+          }
+
+          find_extract "clash-linux-amd64-v1.tar.gz" "openclash-x86"
+          find_extract "clash-linux-arm64.tar.gz" "openclash-a53"
+          find_extract "clash-linux-armv7.tar.gz" "openclash-a32"
+
+      - name: Package and Upload
         run: |
-          cp OpenClash/luci-app-openclash_*.ipk openclash-x86/ || true
-          cp OpenClash/luci-app-openclash_*.ipk openclash-a53/ || true
-          cp OpenClash/luci-app-openclash_*.ipk openclash-a32/ || true
+          mkdir -p output
+          zip -r output/openclash-x86.zip openclash-x86
+          zip -r output/openclash-a53.zip openclash-a53
+          zip -r output/openclash-a32.zip openclash-a32
+          ls -lh output
 
-      - name: Extract meta cores
-        run: |
-          tar -xzvf Meta/meta/clash-linux-amd64-v1.tar.gz -C openclash-x86
-          tar -xzvf Meta/meta/clash-linux-arm64.tar.gz -C openclash-a53
-          tar -xzvf Meta/meta/clash-linux-armv7.tar.gz -C openclash-a32
-          mv openclash-x86/clash openclash-x86/clash_meta
-          mv openclash-a53/clash openclash-a53/clash_meta
-          mv openclash-a32/clash openclash-a32/clash_meta
-
-      - name: Add install script
-        run: |
-          cat > install.sh <<'EOF'
-          #!/bin/bash
-          echo ">>> Installing OpenClash ..."
-          mkdir -p /etc/openclash/core/
-          cp clash_meta /etc/openclash/core/clash_meta
-          chmod +x /etc/openclash/core/clash_meta
-          opkg install luci-app-openclash_*.ipk
-          echo ">>> OpenClash installation complete."
-          EOF
-          chmod +x install.sh
-
-      - name: Clone makeself
-        run: |
-          git clone https://github.com/megastep/makeself.git
-          chmod +x makeself/makeself.sh
-
-      - name: Create self-extracting installers
-        run: |
-          ./makeself/makeself.sh openclash-x86 OpenClash_x86_64_${{ env.version }}.run "OpenClash ${{ env.version }} (x86_64)" ./install.sh
-          ./makeself/makeself.sh openclash-a53 OpenClash_aarch64_${{ env.version }}.run "OpenClash ${{ env.version }} (ARMv8)" ./install.sh
-          ./makeself/makeself.sh openclash-a32 OpenClash_armv7_${{ env.version }}.run "OpenClash ${{ env.version }} (ARMv7/Cortex-A5)" ./install.sh
-
-      - name: Delete previous release and tag
-        uses: dev-drprasad/delete-tag-and-release@v1.0
-        with:
-          tag_name: openclash-latest
-          delete_release: true
+      - name: Delete Old Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest -y || true
+          gh release delete ${{ env.latest }} -y || true
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: openclash-latest
-          name: "OpenClash v${{ env.version }} Auto Installer"
-          files: |
-            OpenClash_x86_64_${{ env.version }}.run
-            OpenClash_aarch64_${{ env.version }}.run
-            OpenClash_armv7_${{ env.version }}.run
-          body: |
-            ✅ 自动构建的 OpenClash 一键安装包  
-            支持平台：
-            - x86_64  
-            - ARMv8 (aarch64)  
-            - ARMv7 / Cortex-A5 / OneCloud  
-            ---
-            安装命令示例：
-            ```bash
-            chmod +x OpenClash_armv7_*.run
-            ./OpenClash_armv7_*.run
-            ```
+      - name: Create New Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ env.latest }} output/*.zip \
+            --title "OpenClash Core ${{ env.latest }}" \
+            --notes "Auto built by GitHub Actions on $(date '+%Y-%m-%d %H:%M:%S')"
+

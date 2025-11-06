@@ -1,8 +1,9 @@
 #=================================================
 # https://github.com/wukongdaily/RunFilesBuilder
 # Description: Build RunFiles using GitHub Actions
-# License: MIT
+# Lisence: MIT
 # Author: wukongdaily
+# Blog: wkdaily.cpolar.cn
 #=================================================
 
 name: Make nikki run files for 23.05
@@ -17,88 +18,90 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-
+      
       - name: Fetch latest release tag from nikki
         id: fetch_latest_tag
         run: |
           latest_tag=$(curl -s https://api.github.com/repos/nikkinikki-org/OpenWrt-nikki/releases/latest | jq -r '.tag_name')
+          
           echo "LATEST_TAG=$latest_tag" >> $GITHUB_ENV
+          # https://github.com/nikkinikki-org/OpenWrt-nikki/releases/download/v1.17.5/nikki_aarch64_cortex-a53-openwrt-23.05.tar.gz
 
       - name: Clone makeself repository
         run: git clone https://github.com/megastep/makeself.git
 
-      - name: Download latest nikki files (3 architectures)
+      - name: Download latest nikki files
         run: |
-          # 下载最新的 3 个架构版本 tar.gz
-          for arch in "x86_64" "aarch64_cortex-a53" "arm_cortex-a7"; do
-            url=$(curl -s https://api.github.com/repos/nikkinikki-org/OpenWrt-nikki/releases/latest \
-              | grep -oP "\"browser_download_url\":\\s*\"[^\"]*nikki_${arch}-openwrt-24\\.10\\.tar\\.gz\"" \
-              | cut -d '"' -f 4)
-            if [ -n "$url" ]; then
-              echo "[+] Found asset for ${arch}: $url"
-              curl -LO "$url"
-            else
-              echo "[!] No asset found for ${arch}"
-            fi
-          done
+          curl -LO $(curl -s https://api.github.com/repos/nikkinikki-org/OpenWrt-nikki/releases/latest | grep -oP '"browser_download_url":\s*".*nikki_aarch64_cortex-a53-openwrt-24.10.tar.gz"' | cut -d '"' -f 4)
+          curl -LO $(curl -s https://api.github.com/repos/nikkinikki-org/OpenWrt-nikki/releases/latest | grep -oP '"browser_download_url":\s*".*nikki_x86_64-openwrt-24.10.tar.gz"' | cut -d '"' -f 4)
+          tar --one-top-level=nikki_aarch64_cortex-a53-openwrt-24.10 -xvzf nikki_aarch64_cortex-a53-openwrt-24.10.tar.gz
+          tar --one-top-level=nikki_x86_64-openwrt-24.10 -xvzf nikki_x86_64-openwrt-24.10.tar.gz
 
-          # 解压
-          for arch in "x86_64" "aarch64_cortex-a53" "arm_cortex-a7"; do
-            tarfile="nikki_${arch}-openwrt-24.10.tar.gz"
-            if [ -f "$tarfile" ]; then
-              tar --one-top-level=nikki_${arch}-openwrt-24.10 -xvzf "$tarfile"
-            else
-              echo "[!] Missing $tarfile, skip extract"
-            fi
-          done
-
-      - name: Organize files per architecture
+      - name: Organize files for aarch64_cortex-a53&x86_64
         run: |
-          for arch in "x86_64" "aarch64_cortex-a53" "arm_cortex-a7"; do
-            src_dir="nikki_${arch}-openwrt-24.10"
-            dst_dir="nikki_${arch}"
-            mkdir -p "$dst_dir"
-            cp "${src_dir}"/*.ipk "$dst_dir"/ || continue
-
-            # 去除文件名中的 ~ 字符
-            pushd "$dst_dir" >/dev/null || continue
-            for file in *~*.ipk; do
-              [ -e "$file" ] || continue
-              new_file="$(echo "$file" | tr -d '~')"
-              [ -e "$new_file" ] && continue
-              mv "$file" "$new_file"
-            done
-            popd >/dev/null
+          mkdir nikki_x86_64 nikki_aarch64_cortex-a53
+          cp nikki_x86_64-openwrt-24.10/*.ipk nikki_x86_64/
+          cp nikki_aarch64_cortex-a53-openwrt-24.10/*.ipk nikki_aarch64_cortex-a53/
+          # 保存当前路径并进入目标目录
+          pushd "nikki_x86_64" >/dev/null || exit 1
+          for file in *~*.ipk; do
+          [ -e "$file" ] || continue
+          # 构造新文件名，去除 ~ 字符
+          new_file="$(echo "$file" | tr -d '~')"
+          # 如果目标文件名已存在，则提示并跳过
+          if [ -e "$new_file" ]; then
+          echo "目标文件已存在，跳过: $new_file"
+          continue
+          fi
+          # 重命名文件
+          mv "$file" "$new_file"
+          echo "已重命名: $file -> $new_file"
           done
+          popd >/dev/null
+
+          pushd "nikki_aarch64_cortex-a53" >/dev/null || exit 1
+          for file in *~*.ipk; do
+          [ -e "$file" ] || continue
+          # 构造新文件名，去除 ~ 字符
+          new_file="$(echo "$file" | tr -d '~')"
+          # 如果目标文件名已存在，则提示并跳过
+          if [ -e "$new_file" ]; then
+          echo "目标文件已存在，跳过: $new_file"
+          continue
+          fi
+          # 重命名文件
+          mv "$file" "$new_file"
+          echo "已重命名: $file -> $new_file"
+          done
+          popd >/dev/null
+          
 
       - name: Create install.sh scripts
         run: |
-          for arch in "x86_64" "aarch64_cortex-a53" "arm_cortex-a7"; do
-            mkdir -p "nikki_${arch}"
-            cat <<'EOF' > "nikki_${arch}/install.sh"
-#!/bin/sh
-opkg update
-if [ $? -ne 0 ]; then
-    echo "update failed。"
-    exit 1
-fi
-opkg install *.ipk
-EOF
-            chmod +x "nikki_${arch}/install.sh"
-          done
+          cat <<EOF > nikki_x86_64/install.sh
+          #!/bin/sh
+          opkg update
+          if [ $? -ne 0 ]; then
+              echo "update failed。"
+              exit 1
+          fi
+          opkg install *.ipk
+          EOF
+          chmod +x nikki_x86_64/install.sh
+          cp nikki_x86_64/install.sh nikki_aarch64_cortex-a53/install.sh
+          
 
       - name: Move nikki directories to makeself
         run: |
           mv nikki_x86_64 makeself/
           mv nikki_aarch64_cortex-a53 makeself/
-          mv nikki_arm_cortex-a7 makeself/
 
       - name: Create self-extracting packages
         run: |
           cd makeself
-          for arch in "x86_64" "aarch64_cortex-a53" "arm_cortex-a7"; do
-            ./makeself.sh "nikki_${arch}/" "nikki_${{ env.LATEST_TAG }}_${arch}.run" "nikki ${arch} installer" ./install.sh
-          done
+          ./makeself.sh nikki_x86_64/ nikki_${{ env.LATEST_TAG }}_x86_64.run "by github action" ./install.sh
+          ./makeself.sh nikki_aarch64_cortex-a53/ nikki_${{ env.LATEST_TAG }}_aarch64_cortex-a53.run "by github action" ./install.sh
+          
 
       - name: Check file sizes
         run: |
@@ -111,7 +114,8 @@ EOF
           sed -i "1i$extra_content" "${{ github.workspace }}/info.md"
 
       - name: Print release notes
-        run: cat ${{ github.workspace }}/info.md
+        run: |
+          cat ${{ github.workspace }}/info.md
 
       - name: Generate new tag & release
         uses: softprops/action-gh-release@v2.1.0
@@ -128,4 +132,7 @@ EOF
         with:
           tag_name: ${{ env.LATEST_TAG }}
           name: "nikki-${{ env.LATEST_TAG }}"
-          files: makeself/nikki_*.r*_
+          files: makeself/nikki_*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

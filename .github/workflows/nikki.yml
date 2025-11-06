@@ -1,12 +1,12 @@
 #=================================================
 # https://github.com/wukongdaily/RunFilesBuilder
-# Description: Build nikki run files for OpenWrt 23.05+
-# Lisence: MIT
+# Description: Build nikki RunFiles using GitHub Actions
+# License: MIT
 # Author: wukongdaily
 # Blog: wkdaily.cpolar.cn
 #=================================================
 
-name: Build nikki run files for 23.05+
+name: Make nikki run files for 24.10
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Fetch latest release tag from nikki
         id: fetch_latest_tag
@@ -30,6 +30,7 @@ jobs:
 
       - name: Download latest nikki files (x86_64 / aarch64 / armv7)
         run: |
+          set -e
           ARCHS=("x86_64" "aarch64_cortex-a53" "arm_cortex-a7")
 
           echo "[+] Fetching release asset list..."
@@ -39,84 +40,98 @@ jobs:
           for arch in "${ARCHS[@]}"; do
             echo "-----------------------------------------"
             echo "[*] Checking for ${arch} ..."
-            url=$(echo "$assets" | jq -r ".assets[] | select(.name | test(\"nikki_${arch}-openwrt.*\\\\.tar\\\\.gz\")) | .browser_download_url")
+            
+            # 优先找 24.10 版本，否则取最新
+            url=$(echo "$assets" | jq -r ".assets[] | select(.name | test(\"nikki_${arch}-openwrt.*\\\\.tar\\\\.gz\")) | .browser_download_url" | grep '24.10' | tail -n1)
+            if [ -z "$url" ]; then
+              url=$(echo "$assets" | jq -r ".assets[] | select(.name | test(\"nikki_${arch}-openwrt.*\\\\.tar\\\\.gz\")) | .browser_download_url" | tail -n1)
+            fi
 
             if [ -n "$url" ] && [ "$url" != "null" ]; then
               echo "[+] Found asset for ${arch}: $url"
-              curl -L -o "nikki_${arch}-openwrt-24.10.tar.gz" "$url"
-              tar --one-top-level="nikki_${arch}-openwrt-24.10" -xzf "nikki_${arch}-openwrt-24.10.tar.gz"
+              curl -L -o "nikki_${arch}-openwrt.tar.gz" "$url"
+              tar --one-top-level="nikki_${arch}-openwrt" -xzf "nikki_${arch}-openwrt.tar.gz"
             else
               echo "[!] Warning: No release asset found for ${arch}"
             fi
           done
 
-      - name: Organize extracted files
+      - name: Organize IPK files
         run: |
-          for arch in x86_64 aarch64_cortex-a53 arm_cortex-a7; do
-            [ -d "nikki_${arch}-openwrt-24.10" ] || continue
-            mkdir -p "nikki_${arch}"
-            cp nikki_${arch}-openwrt-24.10/*.ipk nikki_${arch}/ 2>/dev/null || true
+          mkdir -p nikki_x86_64 nikki_aarch64_cortex-a53 nikki_arm_cortex-a7
 
-            # 清理带 ~ 的文件名
-            pushd "nikki_${arch}" >/dev/null
+          cp nikki_x86_64-openwrt/*.ipk nikki_x86_64/ || true
+          cp nikki_aarch64_cortex-a53-openwrt/*.ipk nikki_aarch64_cortex-a53/ || true
+          cp nikki_arm_cortex-a7-openwrt/*.ipk nikki_arm_cortex-a7/ || true
+
+          for dir in nikki_x86_64 nikki_aarch64_cortex-a53 nikki_arm_cortex-a7; do
+            [ -d "$dir" ] || continue
+            pushd "$dir" >/dev/null
             for file in *~*.ipk; do
               [ -e "$file" ] || continue
-              mv "$file" "$(echo "$file" | tr -d '~')"
+              new_file="$(echo "$file" | tr -d '~')"
+              [ -e "$new_file" ] && continue
+              mv "$file" "$new_file"
             done
             popd >/dev/null
           done
 
       - name: Create install.sh scripts
         run: |
-          for arch in x86_64 aarch64_cortex-a53 arm_cortex-a7; do
-            [ -d "nikki_${arch}" ] || continue
-            cat <<'EOF' > "nikki_${arch}/install.sh"
-            #!/bin/sh
-            echo "[+] Updating opkg list..."
-            opkg update
-            if [ $? -ne 0 ]; then
-                echo "[x] opkg update failed."
-                exit 1
-            fi
-            echo "[+] Installing packages..."
-            opkg install *.ipk
-            echo "[✓] Install completed."
-            EOF
-            chmod +x "nikki_${arch}/install.sh"
+          for dir in nikki_x86_64 nikki_aarch64_cortex-a53 nikki_arm_cortex-a7; do
+            [ -d "$dir" ] || continue
+            cat <<'EOF' > "$dir/install.sh"
+#!/bin/sh
+opkg update
+if [ $? -ne 0 ]; then
+    echo "update failed。"
+    exit 1
+fi
+opkg install *.ipk || exit 1
+EOF
+            chmod +x "$dir/install.sh"
           done
 
-      - name: Move directories to makeself and pack
+      - name: Move nikki directories into makeself
+        run: |
+          mv nikki_x86_64 makeself/ || true
+          mv nikki_aarch64_cortex-a53 makeself/ || true
+          mv nikki_arm_cortex-a7 makeself/ || true
+
+      - name: Create self-extracting packages
         run: |
           cd makeself
-          for arch in x86_64 aarch64_cortex-a53 arm_cortex-a7; do
-            [ -d "../nikki_${arch}" ] || continue
-            mv ../nikki_${arch} .
-            ./makeself.sh nikki_${arch}/ nikki_${{ env.LATEST_TAG }}_${arch}.run "nikki ${arch} auto installer" ./install.sh
-          done
+          [ -d nikki_x86_64 ] && ./makeself.sh nikki_x86_64/ nikki_${{ env.LATEST_TAG }}_x86_64.run "by github action" ./install.sh
+          [ -d nikki_aarch64_cortex-a53 ] && ./makeself.sh nikki_aarch64_cortex-a53/ nikki_${{ env.LATEST_TAG }}_aarch64_cortex-a53.run "by github action" ./install.sh
+          [ -d nikki_arm_cortex-a7 ] && ./makeself.sh nikki_arm_cortex-a7/ nikki_${{ env.LATEST_TAG }}_arm_cortex-a7.run "by github action" ./install.sh
 
-      - name: Check output
-        run: |
-          ls -lh makeself/nikki_*.run
+      - name: Check file sizes
+        run: ls -lh makeself/nikki_*.run || true
 
-      - name: Generate release notes
+      - name: Prepare release notes
         run: |
           cat <<EOF > info.md
-          ## nikki RunFiles - 自动构建版
-          **构建架构:** x86_64 / aarch64_cortex-a53 / arm_cortex-a7  
-          **版本:** ${{ env.LATEST_TAG }}
+![Github](https://img.shields.io/badge/nikki.run-123456?logo=github&logoColor=fff&labelColor=yellow&style=for-the-badge)
+[![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.cn/archives/1)
+![GitHub Downloads (all assets, specific tag)](https://img.shields.io/github/downloads/wukongdaily/RunFilesBuilder/${{ env.LATEST_TAG }}/total?style=for-the-badge&labelColor=black&color=%2325c2a0)
+EOF
 
-          ---
-          ✅ 自动检测 nikki 最新版本并生成 `.run` 一键安装包  
-          📦 包含适配 OneCloud (ARMv7-A 32bit)  
-          🔗 原始仓库: [nikkinikki-org/OpenWrt-nikki](https://github.com/nikkinikki-org/OpenWrt-nikki)
-          EOF
+      - name: Generate new tag & release
+        uses: softprops/action-gh-release@v2.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.LATEST_TAG }}
+          target_commitish: ${{ github.ref_name }}
+          prerelease: false
+          body_path: info.md
 
-      - name: Create GitHub Release
+      - name: Upload run files as release assets
         uses: softprops/action-gh-release@v2.1.0
         with:
           tag_name: ${{ env.LATEST_TAG }}
           name: "nikki-${{ env.LATEST_TAG }}"
-          body_path: info.md
           files: makeself/nikki_*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
